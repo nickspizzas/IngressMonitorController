@@ -320,8 +320,8 @@ type RouteURLSource struct {
 
 // EndpointMonitorStatus defines the observed state of EndpointMonitor
 type EndpointMonitorStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// The id of the uptime test
+	UptimeTestId string `json:"uptimeTestId,omitempty"`
 }
 
 //+kubebuilder:object:root=true

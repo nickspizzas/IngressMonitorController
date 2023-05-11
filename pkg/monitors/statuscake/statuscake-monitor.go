@@ -1,27 +1,91 @@
 package statuscake
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
+	"reflect"
 	"strings"
+	"time"
 
+	gocache "github.com/patrickmn/go-cache"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	statuscake "github.com/StatusCakeDev/statuscake-go"
+	"github.com/StatusCakeDev/statuscake-go/credentials"
 	endpointmonitorv1alpha1 "github.com/stakater/IngressMonitorController/v2/api/v1alpha1"
 	"github.com/stakater/IngressMonitorController/v2/pkg/config"
 	"github.com/stakater/IngressMonitorController/v2/pkg/models"
 )
 
+var cache = gocache.New(5*time.Minute, 5*time.Minute)
 var log = logf.Log.WithName("statuscake-monitor")
+var statusCodes = []string{
+	"204", // No content
+	"205", // Reset content
+	"206", // Partial content
+	"303", // See other
+	"305", // Use proxy
+	// https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#4xx_Client_errors
+	// https://support.cloudflare.com/hc/en-us/articles/115003014512/
+	"400",
+	"401",
+	"402",
+	"403",
+	"404",
+	"405",
+	"406",
+	"407",
+	"408",
+	"409",
+	"410",
+	"411",
+	"412",
+	"413",
+	"414",
+	"415",
+	"416",
+	"417",
+	"418",
+	"421",
+	"422",
+	"423",
+	"424",
+	"425",
+	"426",
+	"428",
+	"429",
+	"431",
+	"444",
+	"451",
+	"499",
+	// https://support.cloudflare.com/hc/en-us/articles/115003011431/
+	"500",
+	"501",
+	"502",
+	"503",
+	"504",
+	"505",
+	"506",
+	"507",
+	"508",
+	"509",
+	"510",
+	"511",
+	"520",
+	"521",
+	"522",
+	"523",
+	"524",
+	"525",
+	"526",
+	"527",
+	"530",
+	"598",
+	"599",
+}
 
 // StatusCakeMonitorService is the service structure for StatusCake
 type StatusCakeMonitorService struct {
@@ -32,171 +96,75 @@ type StatusCakeMonitorService struct {
 	client   *http.Client
 }
 
-func (monitor *StatusCakeMonitorService) Equal(oldMonitor models.Monitor, newMonitor models.Monitor) bool {
-	// TODO: Retrieve oldMonitor config and compare it here
-	return false
+func (service *StatusCakeMonitorService) Equal(oldMonitor models.Monitor, newMonitor models.Monitor) bool {
+
+	old := service.generateUptimeTest(oldMonitor, service.cgroup)
+	new := service.generateUptimeTest(newMonitor, service.cgroup)
+
+	if !(reflect.DeepEqual(old, new)) {
+		log.Info(fmt.Sprintf("Changes deteced for monitor %s", oldMonitor.Name))
+		return false
+	}
+	return true
 }
 
-// buildUpsertForm function is used to create the form needed to Add or update a monitor
-func buildUpsertForm(m models.Monitor, cgroup string) url.Values {
-	f := url.Values{}
-	f.Add("name", m.Name)
-	unEscapedURL, _ := url.QueryUnescape(m.URL)
-	f.Add("website_url", unEscapedURL)
+func (service *StatusCakeMonitorService) generateUptimeTest(m models.Monitor, cgroup string) statuscake.UptimeTest {
 
 	// Retrieve provider configuration
 	providerConfig, _ := m.Config.(*endpointmonitorv1alpha1.StatusCakeConfig)
 
-	if providerConfig != nil && providerConfig.CheckRate > 0 {
-		f.Add("check_rate", strconv.Itoa(providerConfig.CheckRate))
-	} else {
-		f.Add("check_rate", "300")
+	uptimeTest := statuscake.UptimeTest{}
+	uptimeTest.Name = m.Name
+
+	uptimeTest.TestType = statuscake.UptimeTestTypeHTTP
+	if providerConfig != nil && len(providerConfig.TestType) > 0 {
+		uptimeTest.TestType = statuscake.UptimeTestType(providerConfig.TestType)
 	}
 
-	if providerConfig != nil && len(providerConfig.TestType) > 0 {
-		f.Add("test_type", providerConfig.TestType)
-	} else {
-		f.Add("test_type", "HTTP")
+	unEscapedURL, _ := url.QueryUnescape(m.URL)
+	uptimeTest.WebsiteURL = unEscapedURL
+
+	uptimeTest.CheckRate = statuscake.UptimeTestCheckRateFiveMinutes
+	if providerConfig != nil && providerConfig.CheckRate > 0 {
+		uptimeTest.CheckRate = statuscake.UptimeTestCheckRate(providerConfig.CheckRate)
 	}
 
 	if providerConfig != nil && len(providerConfig.ContactGroup) > 0 {
-		contactGroups := convertStringToArray(providerConfig.ContactGroup)
-		for _, contactgroups := range contactGroups {
-			f.Add("contact_groups[]", contactgroups)
-		}
+		uptimeTest.ContactGroups = convertStringToArray(providerConfig.ContactGroup)
 	} else {
 		if cgroup != "" {
-			contactGroups := convertStringToArray(cgroup)
-			for _, contactgroups := range contactGroups {
-				f.Add("contact_groups[]", contactgroups)
-			}
+			uptimeTest.ContactGroups = convertStringToArray(cgroup)
 		}
 	}
 
 	if providerConfig != nil && len(providerConfig.TestTags) > 0 {
-		testTags := convertStringToArray(providerConfig.TestTags)
-		for _, testTag := range testTags {
-			f.Add("tags[]", testTag)
-		}
+		uptimeTest.Tags = convertStringToArray(providerConfig.TestTags)
 	}
 
-	if providerConfig != nil && len(providerConfig.BasicAuthUser) > 0 {
-		// This value is mandatory
-		// Environment variable should define the password
-		// Mounted via a secret; key is the username, value is the password
-		basicPass := os.Getenv(providerConfig.BasicAuthUser)
-		if basicPass != "" {
-			f.Add("basic_username", providerConfig.BasicAuthUser)
-			f.Add("basic_password", basicPass)
-			log.Info("Basic auth requirement detected. Setting username and password")
-		} else {
-			log.Info("Error reading basic auth password from environment variable")
-		}
-	}
-
+	uptimeTest.StatusCodes = statusCodes
 	if providerConfig != nil && len(providerConfig.StatusCodes) > 0 {
-		f.Add("status_codes_csv", providerConfig.StatusCodes)
-
-	} else {
-		statusCodes := []string{
-			"204", // No content
-			"205", // Reset content
-			"206", // Partial content
-			"303", // See other
-			"305", // Use proxy
-			// https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#4xx_Client_errors
-			// https://support.cloudflare.com/hc/en-us/articles/115003014512/
-			"400",
-			"401",
-			"402",
-			"403",
-			"404",
-			"405",
-			"406",
-			"407",
-			"408",
-			"409",
-			"410",
-			"411",
-			"412",
-			"413",
-			"414",
-			"415",
-			"416",
-			"417",
-			"418",
-			"421",
-			"422",
-			"423",
-			"424",
-			"425",
-			"426",
-			"428",
-			"429",
-			"431",
-			"444",
-			"451",
-			"499",
-			// https://support.cloudflare.com/hc/en-us/articles/115003011431/
-			"500",
-			"501",
-			"502",
-			"503",
-			"504",
-			"505",
-			"506",
-			"507",
-			"508",
-			"509",
-			"510",
-			"511",
-			"520",
-			"521",
-			"522",
-			"523",
-			"524",
-			"525",
-			"526",
-			"527",
-			"530",
-			"598",
-			"599",
-		}
-		f.Add("status_codes_csv", strings.Join(statusCodes, ","))
+		uptimeTest.StatusCodes = convertStringToArray(providerConfig.StatusCodes)
 	}
 
 	if providerConfig != nil {
-		if providerConfig.Paused {
-			f.Add("paused", "1")
-		}
-		if providerConfig.FollowRedirect {
-			f.Add("follow_redirects", "1")
-		}
-		if providerConfig.EnableSSLAlert {
-			f.Add("enable_ssl_alert", "1")
-		}
+		uptimeTest.Paused = providerConfig.Paused
+		uptimeTest.FollowRedirects = providerConfig.FollowRedirect
+		uptimeTest.EnableSSLAlert = providerConfig.EnableSSLAlert
 	}
 
-	// Shifted to contact groups api
-	// TODO: create proper structs to cater contact groups api
-	/*
-		if providerConfig != nil && len(providerConfig.PingURL) > 0 {
-			f.Add("ping_url", providerConfig.PingURL)
-		}
-	*/
 	if providerConfig != nil && providerConfig.TriggerRate > 0 {
-		f.Add("trigger_rate", strconv.Itoa(providerConfig.TriggerRate))
+		uptimeTest.TriggerRate = int32(providerConfig.TriggerRate)
 	}
-	if providerConfig != nil && providerConfig.Port > 0 {
-		f.Add("port", strconv.Itoa(providerConfig.Port))
-	}
+
 	if providerConfig != nil && providerConfig.Confirmation > 0 {
-		f.Add("confirmation", strconv.Itoa(providerConfig.Confirmation))
+		uptimeTest.Confirmation = int32(providerConfig.Confirmation)
 	}
+
 	if providerConfig != nil {
-		f.Add("find_string", providerConfig.FindString)
+		uptimeTest.FindString = &providerConfig.FindString
 	}
-	return f
+
+	return uptimeTest
 }
 
 // convertValuesToString changes multiple values returned by same key to string for validation purposes
@@ -241,207 +209,145 @@ func (service *StatusCakeMonitorService) GetByName(name string) (*models.Monitor
 }
 
 // GetByID function will Get a monitor by it's ID
-func (service *StatusCakeMonitorService) GetByID(id string) (*models.Monitor, error) {
-	u, err := url.Parse(service.url)
-	if err != nil {
-		log.Error(err, "Unable to Parse monitor URL")
-		return nil, err
-	}
-	u.Path = fmt.Sprintf("/v1/uptime/%s", id)
-	u.Scheme = "https"
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		log.Error(err, "Unable to retrieve monitor")
-		return nil, err
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", service.apiKey))
+func (service *StatusCakeMonitorService) GetById(id string) (*models.Monitor, error) {
 
-	resp, err := service.client.Do(req)
+	bearer := credentials.NewBearerWithStaticToken(service.apiKey)
+	client := statuscake.NewClient(statuscake.WithRequestCredentials(bearer))
+
+	resp, err := client.GetUptimeTest(context.Background(), id).Execute()
+
 	if err != nil {
-		log.Error(err, "Unable to retrieve monitor")
+		log.Error(nil, "Getting monitor with id "+id+" failed: "+fmt.Sprintf("%+v", statuscake.Errors(err)))
 		return nil, err
 	}
 
-	BodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error(err, "Unable to read response body")
-	}
-	bodyString := string(BodyBytes)
-
-	if resp.StatusCode == http.StatusOK {
-
-		// TODO use statuscake managed structs, rather than managing own structs
-
-		var StatusCakeMonitorData statuscake.UptimeTestResponse
-		err = json.Unmarshal(BodyBytes, &StatusCakeMonitorData)
-		if err != nil {
-			log.Error(err, "Unable to unmarshal response")
-			return nil, err
-		}
-		return StatusCakeApiResponseDataToBaseMonitorMapper(StatusCakeMonitorData), nil
-	}
-	log.Info(fmt.Sprintf("Request failed with response: %s for id: %s", bodyString, id))
-
-	return nil, errors.New("GetByID Request failed")
+	return StatusCakeMonitorMonitorToBaseMonitorMapper(resp.Data), nil
 }
 
 // GetAll function will fetch all monitors
 func (service *StatusCakeMonitorService) GetAll() []models.Monitor {
-	var StatusCakeMonitorData []StatusCakeMonitorData
+	var statusCakeMonitorData []statuscake.UptimeTestOverview
+
+	cached, found := cache.Get("uptime-checks")
+	if found {
+		return StatusCakeMonitorMonitorsToBaseMonitorsMapper(cached.([]statuscake.UptimeTestOverview))
+	}
+
 	page := 1
 	for {
 		res := service.fetchMonitors(page)
-		StatusCakeMonitorData = append(StatusCakeMonitorData, res.StatusCakeData...)
-		if page >= res.StatusCakeMetadata.PageCount {
+		statusCakeMonitorData = append(statusCakeMonitorData, res.Data...)
+		if page >= int(res.Metadata.PageCount) {
 			break
 		}
 		page += 1
 	}
-	return StatusCakeMonitorMonitorsToBaseMonitorsMapper(StatusCakeMonitorData)
+
+	cache.Set("uptime-checks", statusCakeMonitorData, gocache.DefaultExpiration)
+
+	return StatusCakeMonitorMonitorsToBaseMonitorsMapper(statusCakeMonitorData)
 }
 
-func (service *StatusCakeMonitorService) fetchMonitors(page int) *StatusCakeMonitor {
-	u, err := url.Parse(service.url)
-	if err != nil {
-		log.Error(err, "Unable to Parse monitor URL")
-		return nil
-	}
-	u.Path = "/v1/uptime/"
-	query := u.Query()
-	query.Add("limit", "100")
-	query.Add("page", strconv.Itoa(page))
-	u.RawQuery = query.Encode()
-	u.Scheme = "https"
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		log.Error(err, "Unable to retrieve monitor")
-		return nil
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", service.apiKey))
+func (service *StatusCakeMonitorService) fetchMonitors(page int) *statuscake.UptimeTests {
 
-	resp, err := service.client.Do(req)
+	bearer := credentials.NewBearerWithStaticToken(service.apiKey)
+	client := statuscake.NewClient(statuscake.WithRequestCredentials(bearer))
+
+	resp, err := client.ListUptimeTests(context.Background()).Execute()
+
 	if err != nil {
-		log.Error(err, "Unable to retrieve monitor")
+		log.Error(nil, "Getting all monitors failed: "+fmt.Sprintf("%+v", statuscake.Errors(err)))
 		return nil
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error(err, "Unable to read response body")
-		return nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	var StatusCakeMonitor StatusCakeMonitor
-	err = json.Unmarshal(bodyBytes, &StatusCakeMonitor)
-	if err != nil {
-		log.Error(err, "Failed to unmarshal response")
-		return nil
-	}
-
-	return &StatusCakeMonitor
+	return &resp
 }
 
 // Add will create a new Monitor
-func (service *StatusCakeMonitorService) Add(m models.Monitor) {
-	u, err := url.Parse(service.url)
+func (service *StatusCakeMonitorService) Add(m models.Monitor) (*string, error) {
+	defer cache.Flush()
+
+	uptimeTest := service.generateUptimeTest(m, service.cgroup)
+
+	bearer := credentials.NewBearerWithStaticToken(service.apiKey)
+	client := statuscake.NewClient(statuscake.WithRequestCredentials(bearer))
+
+	resp, err := client.CreateUptimeTest(context.Background()).
+		Name(uptimeTest.Name).
+		TestType(uptimeTest.TestType).
+		WebsiteURL(uptimeTest.WebsiteURL).
+		CheckRate(uptimeTest.CheckRate).
+		ContactGroups(uptimeTest.ContactGroups).
+		Tags(uptimeTest.Tags).
+		StatusCodes(uptimeTest.StatusCodes).
+		Paused(uptimeTest.Paused).
+		FollowRedirects(uptimeTest.FollowRedirects).
+		EnableSSLAlert(uptimeTest.EnableSSLAlert).
+		TriggerRate(uptimeTest.TriggerRate).
+		Confirmation(uptimeTest.Confirmation).
+		FindString(*uptimeTest.FindString).
+		Execute()
+
 	if err != nil {
-		log.Error(err, "Unable to Parse monitor URL")
-		return
+		log.Error(nil, "Adding monitor "+m.Name+"failed: "+fmt.Sprintf("%+v", statuscake.Errors(err)))
+		return nil, err
 	}
-	u.Path = "/v1/uptime"
-	u.Scheme = "https"
-	data := buildUpsertForm(m, service.cgroup)
-	req, err := http.NewRequest("POST", u.String(), bytes.NewBufferString(data.Encode()))
-	if err != nil {
-		log.Error(err, "Unable to create http request")
-		return
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", service.apiKey))
-	resp, err := service.client.Do(req)
-	if err != nil {
-		log.Error(err, "Unable to make HTTP call")
-		return
-	}
-	if resp.StatusCode == http.StatusCreated {
-		log.Info("Monitor Added: " + m.Name)
-	} else {
-		bodyBytes, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Error(err, "Unable to read response")
-			os.Exit(1)
-		}
-		log.Error(nil, "Insert Request failed for name: "+m.Name+" with status code "+strconv.Itoa(resp.StatusCode))
-		log.Error(nil, string(bodyBytes))
-	}
+
+	id := resp.Data.NewID
+	log.Info(fmt.Sprintf("Added monitor %s with id %s", m.Name, id))
+
+	return &id, nil
 }
 
 // Update will update an existing Monitor
-func (service *StatusCakeMonitorService) Update(m models.Monitor) {
-	u, err := url.Parse(service.url)
+func (service *StatusCakeMonitorService) Update(m models.Monitor) error {
+	defer cache.Flush()
+
+	bearer := credentials.NewBearerWithStaticToken(service.apiKey)
+	client := statuscake.NewClient(statuscake.WithRequestCredentials(bearer))
+
+	uptimeTest := service.generateUptimeTest(m, service.cgroup)
+
+	err := client.UpdateUptimeTest(context.Background(), m.ID).
+		Name(uptimeTest.Name).
+		WebsiteURL(uptimeTest.WebsiteURL).
+		CheckRate(uptimeTest.CheckRate).
+		ContactGroups(uptimeTest.ContactGroups).
+		Tags(uptimeTest.Tags).
+		StatusCodes(uptimeTest.StatusCodes).
+		Paused(uptimeTest.Paused).
+		FollowRedirects(uptimeTest.FollowRedirects).
+		EnableSSLAlert(uptimeTest.EnableSSLAlert).
+		TriggerRate(uptimeTest.TriggerRate).
+		Confirmation(uptimeTest.Confirmation).
+		FindString(*uptimeTest.FindString).
+		Execute()
+
 	if err != nil {
-		log.Error(err, "Unable to Parse monitor URL")
-		return
+		log.Error(nil, "Updating monitor "+m.Name+"failed: "+fmt.Sprintf("%+v", statuscake.Errors(err)))
+		return err
 	}
-	u.Path = fmt.Sprintf("/v1/uptime/%s", m.ID)
-	u.Scheme = "https"
-	data := buildUpsertForm(m, service.cgroup)
-	req, err := http.NewRequest("PUT", u.String(), bytes.NewBufferString(data.Encode()))
-	if err != nil {
-		log.Error(err, "Unable to create http request")
-		return
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", service.apiKey))
-	resp, err := service.client.Do(req)
-	if err != nil {
-		log.Error(err, "Unable to make HTTP call")
-		return
-	}
-	if resp.StatusCode == http.StatusNoContent {
-		log.Info("Monitor Updated: " + m.ID)
-	} else {
-		bodyBytes, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Error(err, "Unable to read response")
-			os.Exit(1)
-		}
-		log.Error(nil, "Update Request failed for name: "+m.Name+" with status code "+strconv.Itoa(resp.StatusCode))
-		log.Error(nil, string(bodyBytes))
-	}
+
+	log.Info(fmt.Sprintf("Updated monitor %s with id %s", m.Name, m.ID))
+
+	return nil
 }
 
 // Remove will delete an existing Monitor
 func (service *StatusCakeMonitorService) Remove(m models.Monitor) {
-	u, err := url.Parse(service.url)
-	if err != nil {
-		log.Error(err, "Unable to Parse monitor URL")
-		return
-	}
-	u.Path = fmt.Sprintf("/v1/uptime/%s", m.ID)
-	u.Scheme = "https"
+	defer cache.Flush()
 
-	req, err := http.NewRequest("DELETE", u.String(), nil)
-	if err != nil {
-		log.Error(err, "Unable to create http request")
-		return
-	}
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", service.apiKey))
-	resp, err := service.client.Do(req)
-	if err != nil {
-		log.Error(err, "Unable to make HTTP call")
-		return
-	}
-	if resp.StatusCode != http.StatusNoContent {
-		log.Error(nil, fmt.Sprintf("Delete Request failed for Monitor: %s with id: %s", m.Name, m.ID))
+	bearer := credentials.NewBearerWithStaticToken(service.apiKey)
+	client := statuscake.NewClient(statuscake.WithRequestCredentials(bearer))
 
-	} else {
-		_, err = service.GetByID(m.ID)
-		if strings.Contains(err.Error(), "Request failed") {
-			log.Info("Monitor Deleted: " + m.ID)
-		} else {
-			log.Error(nil, fmt.Sprintf("Delete Request failed for Monitor: %s with id: %s", m.Name, m.ID))
-		}
+	err := client.DeleteUptimeTest(context.Background(), m.ID).Execute()
+
+	if err != nil {
+		log.Error(nil, "Deleting monitor "+m.Name+"failed: "+fmt.Sprintf("%+v", statuscake.Errors(err)))
+		return
 	}
+
+	log.Info(fmt.Sprintf("Deleted monitor %swith id %s", m.Name, m.ID))
+
+	return
 }

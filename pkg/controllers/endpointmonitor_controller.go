@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stakater/IngressMonitorController/v2/pkg/config"
+	"github.com/stakater/IngressMonitorController/v2/pkg/models"
 	"github.com/stakater/IngressMonitorController/v2/pkg/monitors"
 	"github.com/stakater/IngressMonitorController/v2/pkg/util"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -85,7 +86,15 @@ func (r *EndpointMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	delay := time.Until(createTime.Add(config.GetControllerConfig().CreationDelay))
 
 	for index := 0; index < len(r.MonitorServices); index++ {
-		monitor := findMonitorByName(r.MonitorServices[index], monitorName)
+
+		var monitor *models.Monitor
+
+		if len(instance.Status.UptimeTestId) > 0 {
+			monitor = getMonitorById(r.MonitorServices[index], instance.Status.UptimeTestId)
+		} else {
+			monitor = findMonitorByName(r.MonitorServices[index], monitorName)
+		}
+
 		if monitor != nil {
 			// Monitor already exists, update if required
 			err = r.handleUpdate(req, instance, *monitor, r.MonitorServices[index])
@@ -96,7 +105,17 @@ func (r *EndpointMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				log.Info("Requeuing request to add monitor " + monitorName + " for " + fmt.Sprintf("%+v", config.GetControllerConfig().CreationDelay) + " seconds")
 				return reconcile.Result{RequeueAfter: delay}, nil
 			}
-			err = r.handleCreate(req, instance, monitorName, r.MonitorServices[index])
+
+			id, err := r.handleCreate(req, instance, monitorName, r.MonitorServices[index])
+			if err != nil {
+				return reconcile.Result{}, err
+
+			}
+			instance.Status.UptimeTestId = *id
+			err = r.Status().Update(context.Background(), instance)
+			if err != nil {
+				return reconcile.Result{}, err
+			}
 		}
 	}
 

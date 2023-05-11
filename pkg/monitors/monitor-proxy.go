@@ -4,13 +4,7 @@ import (
 	endpointmonitorv1alpha1 "github.com/stakater/IngressMonitorController/v2/api/v1alpha1"
 	"github.com/stakater/IngressMonitorController/v2/pkg/config"
 	"github.com/stakater/IngressMonitorController/v2/pkg/models"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/appinsights"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/gcloud"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/pingdom"
 	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/statuscake"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/updown"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/uptime"
-	"github.com/stakater/IngressMonitorController/v2/pkg/monitors/uptimerobot"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -28,20 +22,20 @@ func (mp *MonitorServiceProxy) GetType() string {
 func (mp *MonitorServiceProxy) OfType(mType string) MonitorServiceProxy {
 	mp.monitorType = mType
 	switch mType {
-	case "UptimeRobot":
-		mp.monitor = &uptimerobot.UpTimeMonitorService{}
-	case "Pingdom":
-		mp.monitor = &pingdom.PingdomMonitorService{}
+	// case "UptimeRobot":
+	// 	mp.monitor = &uptimerobot.UpTimeMonitorService{}
+	// case "Pingdom":
+	// 	mp.monitor = &pingdom.PingdomMonitorService{}
 	case "StatusCake":
 		mp.monitor = &statuscake.StatusCakeMonitorService{}
-	case "Uptime":
-		mp.monitor = &uptime.UpTimeMonitorService{}
-	case "Updown":
-		mp.monitor = &updown.UpdownMonitorService{}
-	case "AppInsights":
-		mp.monitor = &appinsights.AppinsightsMonitorService{}
-	case "gcloud":
-		mp.monitor = &gcloud.MonitorService{}
+	// case "Uptime":
+	// 	mp.monitor = &uptime.UpTimeMonitorService{}
+	// case "Updown":
+	// 	mp.monitor = &updown.UpdownMonitorService{}
+	// case "AppInsights":
+	// 	mp.monitor = &appinsights.AppinsightsMonitorService{}
+	// case "gcloud":
+	// 	mp.monitor = &gcloud.MonitorService{}
 	default:
 		panic("No such provider found: " + mType)
 	}
@@ -84,16 +78,20 @@ func (mp *MonitorServiceProxy) GetByName(name string) (*models.Monitor, error) {
 	return mp.monitor.GetByName(name)
 }
 
-func (mp *MonitorServiceProxy) Add(m models.Monitor) {
-	mp.monitor.Add(m)
+func (mp *MonitorServiceProxy) GetById(id string) (*models.Monitor, error) {
+	return mp.monitor.GetById(id)
+}
+
+func (mp *MonitorServiceProxy) Add(m models.Monitor) (*string, error) {
+	return mp.monitor.Add(m)
 }
 
 func (mp *MonitorServiceProxy) Equal(oldMonitor models.Monitor, newMonitor models.Monitor) bool {
 	return mp.monitor.Equal(oldMonitor, newMonitor)
 }
 
-func (mp *MonitorServiceProxy) Update(m models.Monitor) {
-	mp.monitor.Update(m)
+func (mp *MonitorServiceProxy) Update(m models.Monitor) error {
+	return mp.monitor.Update(m)
 }
 
 func (mp *MonitorServiceProxy) Remove(m models.Monitor) {

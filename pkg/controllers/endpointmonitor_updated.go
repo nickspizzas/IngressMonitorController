@@ -23,7 +23,7 @@ func (r *EndpointMonitorReconciler) handleUpdate(request reconcile.Request, inst
 
 	// Compare and Update monitor for provider if required
 	if !monitorService.Equal(monitor, updatedMonitor) {
-		monitorService.Update(updatedMonitor)
+		return monitorService.Update(updatedMonitor)
 	}
 	return nil
 }

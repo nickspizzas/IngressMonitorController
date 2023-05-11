@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go v0.81.0
 	github.com/Azure/azure-sdk-for-go v44.0.0+incompatible
 	github.com/Azure/go-autorest/autorest/azure/auth v0.5.0
-	github.com/StatusCakeDev/statuscake-go v1.1.0
+	github.com/StatusCakeDev/statuscake-go v1.2.0
 	github.com/antoineaugusti/updown v0.0.0-20190412074625-d590ab97f115
 	github.com/go-logr/logr v1.2.0
 	github.com/kelseyhightower/envconfig v1.4.0
@@ -23,6 +23,11 @@ require (
 	k8s.io/apimachinery v0.23.5
 	k8s.io/client-go v0.23.5
 	sigs.k8s.io/controller-runtime v0.11.2
+)
+
+require (
+	github.com/mattn/go-colorable v0.1.12 // indirect
+	github.com/mattn/go-isatty v0.0.14 // indirect
 )
 
 require (
@@ -63,6 +68,7 @@ require (
 	github.com/prometheus/client_model v0.2.0 // indirect
 	github.com/prometheus/common v0.28.0 // indirect
 	github.com/prometheus/procfs v0.6.0 // indirect
+	github.com/rs/zerolog v1.29.1
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect

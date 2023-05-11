@@ -9,9 +9,10 @@ import (
 
 type MonitorService interface {
 	GetAll() []models.Monitor
-	Add(m models.Monitor)
-	Update(m models.Monitor)
+	Add(m models.Monitor) (*string, error)
+	Update(m models.Monitor) error
 	GetByName(name string) (*models.Monitor, error)
+	GetById(id string) (*models.Monitor, error)
 	Remove(m models.Monitor)
 	Setup(p config.Provider)
 	Equal(oldMonitor models.Monitor, newMonitor models.Monitor) bool

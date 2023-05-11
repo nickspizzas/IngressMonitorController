@@ -280,6 +280,10 @@ spec:
             type: object
           status:
             description: EndpointMonitorStatus defines the observed state of EndpointMonitor
+            properties:
+              uptimeTestId:
+                description: The id of the uptime test
+                type: string
             type: object
         type: object
     served: true

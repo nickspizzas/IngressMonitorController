@@ -9,14 +9,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func (r *EndpointMonitorReconciler) handleCreate(request reconcile.Request, instance *endpointmonitorv1alpha1.EndpointMonitor, monitorName string, monitorService monitors.MonitorServiceProxy) error {
+func (r *EndpointMonitorReconciler) handleCreate(request reconcile.Request, instance *endpointmonitorv1alpha1.EndpointMonitor, monitorName string, monitorService monitors.MonitorServiceProxy) (*string, error) {
 	log := r.Log.WithValues("endpointMonitor", instance.ObjectMeta.Namespace)
 
 	log.Info("Creating Monitor: " + monitorName)
 
 	url, err := util.GetMonitorURL(r.Client, instance)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Extract provider specific configuration
@@ -25,8 +25,8 @@ func (r *EndpointMonitorReconciler) handleCreate(request reconcile.Request, inst
 	// Create monitor Model
 	monitor := models.Monitor{Name: monitorName, URL: url, Config: providerConfig}
 
-	// Add monitor for provider
-	monitorService.Add(monitor)
+	log.Info("Adding Monitor: " + monitorName)
 
-	return nil
+	// Add monitor for provider
+	return monitorService.Add(monitor)
 }
